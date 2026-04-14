@@ -1,7 +1,11 @@
 """
-Algorithmic Trading Bot v19 - Kelly Criterion + VIX Regime Filter
+Algorithmic Trading Bot v20 - Optimized Parameters
 Author: Theo
-Fixes: partial position sizing, VIX date lookup, history tracking
+
+Optimized config found by optimize.py:
+  ATR_STOP=1.5, ATR_TP=3.0, ATR_TRAIL=1.2, ATR_TRAIL_ACT=0.5
+  SCORE_MIN=4, PULLBACK_MAX=0.01
+  Result: +30.14% | Sharpe 2.159 | Win rate 88.9% | Drawdown -5.06%
 """
 
 import yfinance as yf
@@ -24,7 +28,7 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# CONFIGURATION
+# CONFIGURATION — paramètres optimisés par optimize.py
 # ============================================================
 TICKER        = "QQQ"
 START         = "2022-01-01"
@@ -34,22 +38,24 @@ INITIAL_CAP   = 10_000
 FEES          = 0.001
 SLIPPAGE      = 0.0005
 TRAIN_RATIO   = 0.33
-SCORE_MIN     = 4
 SLOPE_WIN     = 3
-ATR_STOP      = 1.2
-ATR_TP        = 3.0
-ATR_TRAIL     = 1.0
-ATR_TRAIL_ACT = 0.8
-PULLBACK_MAX  = 0.015
+
+# Paramètres optimisés ✓
+SCORE_MIN     = 4
+PULLBACK_MAX  = 0.01    # 1.0% (plus strict que v19)
+ATR_STOP      = 1.5     # stop loss
+ATR_TP        = 3.0     # take profit
+ATR_TRAIL     = 1.2     # trailing step
+ATR_TRAIL_ACT = 0.5     # trailing actif après +0.5 ATR
 
 # Kelly Criterion
-KELLY_FRACTION = 0.5   # demi-Kelly = plus conservateur
-MAX_POSITION   = 0.95  # max 95% du capital
-MIN_POSITION   = 0.10  # min 10% du capital
+KELLY_FRACTION = 0.5
+MAX_POSITION   = 0.95
+MIN_POSITION   = 0.10
 
 # VIX
-VIX_HIGH    = 25   # position réduite
-VIX_EXTREME = 35   # pas de trade
+VIX_HIGH    = 25
+VIX_EXTREME = 35
 
 
 # ============================================================
@@ -61,7 +67,7 @@ def load_data(ticker, start, end, interval):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.dropna(inplace=True)
-    print(f"[DATA]  {len(df)} candles — {ticker} ({start} → {end})")
+    print("[DATA]  " + str(len(df)) + " candles — " + ticker)
     return df
 
 
@@ -72,9 +78,8 @@ def load_vix(start, end):
         vix.columns = vix.columns.get_level_values(0)
     vix = vix[["Close"]].rename(columns={"Close": "VIX"})
     vix.dropna(inplace=True)
-    # Normalise l'index en date pure pour éviter les erreurs de timezone
     vix.index = pd.to_datetime(vix.index).normalize()
-    print(f"[VIX]   {len(vix)} candles chargées")
+    print("[VIX]   " + str(len(vix)) + " candles chargees")
     return vix
 
 
@@ -83,15 +88,15 @@ def load_vix(start, end):
 # ============================================================
 def build_indicators(df):
     for w in [10, 20, 50, 200]:
-        df[f"MA{w}"] = df["Close"].rolling(w).mean()
+        df["MA" + str(w)] = df["Close"].rolling(w).mean()
 
     df["MA20_slope"] = df["MA20"] - df["MA20"].shift(SLOPE_WIN)
     df["MA50_slope"] = df["MA50"] - df["MA50"].shift(SLOPE_WIN)
 
-    delta      = df["Close"].diff()
-    gain       = delta.clip(lower=0).rolling(14).mean()
-    loss       = (-delta.clip(upper=0)).rolling(14).mean()
-    df["RSI"]  = 100 - (100 / (1 + gain / loss))
+    delta     = df["Close"].diff()
+    gain      = delta.clip(lower=0).rolling(14).mean()
+    loss      = (-delta.clip(upper=0)).rolling(14).mean()
+    df["RSI"] = 100 - (100 / (1 + gain / loss))
 
     ema12           = df["Close"].ewm(span=12).mean()
     ema26           = df["Close"].ewm(span=26).mean()
@@ -150,18 +155,11 @@ def is_pullback(row):
 
 
 # ============================================================
-# 6. KELLY CRITERION
+# 6. KELLY
 # ============================================================
 def kelly_position(trades_history):
-    """
-    Calcule la fraction optimale du capital à investir.
-    Kelly = W - (1-W)/R
-    W = win rate sur les 20 derniers trades
-    R = ratio avg_gain / avg_loss
-    Retourne une fraction entre MIN_POSITION et MAX_POSITION.
-    """
     if len(trades_history) < 5:
-        return 0.50  # pas assez d'historique → 50% par défaut
+        return 0.50
 
     recent   = trades_history[-20:]
     wins     = [t for t in recent if t["pnl"] > 0]
@@ -182,14 +180,9 @@ def kelly_position(trades_history):
 
 
 # ============================================================
-# 7. VIX REGIME
+# 7. VIX
 # ============================================================
 def get_vix_value(vix_df, date):
-    """
-    Récupère le VIX pour une date donnée.
-    Utilise asof() pour trouver la valeur la plus récente disponible.
-    Retourne 20.0 (neutre) si pas de données.
-    """
     try:
         date_norm = pd.Timestamp(date).normalize()
         idx       = vix_df.index.asof(date_norm)
@@ -201,17 +194,11 @@ def get_vix_value(vix_df, date):
 
 
 def get_vix_multiplier(vix_value):
-    """
-    VIX < 25  → position 100%
-    VIX 25-35 → position 50-100% (interpolation)
-    VIX > 35  → position 0% (pas de trade)
-    """
     if vix_value > VIX_EXTREME:
         return 0.0
     elif vix_value > VIX_HIGH:
         return 0.5 + 0.5 * (VIX_EXTREME - vix_value) / (VIX_EXTREME - VIX_HIGH)
-    else:
-        return 1.0
+    return 1.0
 
 
 # ============================================================
@@ -221,8 +208,7 @@ def backtest(df, vix_df):
     split   = int(len(df) * TRAIN_RATIO)
     df_test = df.iloc[split:].copy().reset_index(drop=False)
 
-    # FIX : on sépare cash (non-investi) et shares (investi)
-    cash        = float(INITIAL_CAP)  # capital non-investi
+    cash        = float(INITIAL_CAP)
     shares      = 0.0
     entry_price = 0.0
     peak_price  = 0.0
@@ -230,7 +216,7 @@ def backtest(df, vix_df):
     tp_price    = 0.0
     trail_act   = 0.0
     in_trade    = False
-    signal_active = False
+    sig_active  = False
     patience    = 0
     MAX_PATIENCE = 5
 
@@ -239,7 +225,7 @@ def backtest(df, vix_df):
     sell_pts     = []
     trades       = []
     vix_log      = []
-    position_log = []  # (idx, position_pct) pour chaque trade entré
+    position_log = []
 
     for i in range(len(df_test)):
         row      = df_test.iloc[i]
@@ -247,7 +233,6 @@ def backtest(df, vix_df):
         atr      = float(row["ATR"])
         gain_pct = (p - entry_price) / entry_price if in_trade else 0.0
 
-        # VIX du jour
         try:
             date = row["Date"]
         except Exception:
@@ -262,21 +247,18 @@ def backtest(df, vix_df):
             floor       = (peak_price - ATR_TRAIL * atr
                            if trailing_on else stop_price)
 
-            # Take profit
             if p >= tp_price:
-                proceeds  = shares * p * (1 - SLIPPAGE) * (1 - FEES)
-                pnl       = proceeds - shares * entry_price
+                proceeds = shares * p * (1 - SLIPPAGE) * (1 - FEES)
+                pnl      = proceeds - shares * entry_price
                 trades.append({"pnl": pnl,
                                 "return_pct": gain_pct * 100,
                                 "type": "take_profit"})
-                # FIX : ajoute les proceeds au cash restant
                 cash    += proceeds
                 shares   = 0.0
                 in_trade = False
-                signal_active = False
+                sig_active = False
                 sell_pts.append(i)
 
-            # Trailing stop ou stop dur
             elif p <= floor:
                 proceeds  = shares * p * (1 - SLIPPAGE) * (1 - FEES)
                 pnl       = proceeds - shares * entry_price
@@ -284,11 +266,10 @@ def backtest(df, vix_df):
                 trades.append({"pnl": pnl,
                                 "return_pct": gain_pct * 100,
                                 "type": exit_type})
-                # FIX : ajoute les proceeds au cash restant
                 cash    += proceeds
                 shares   = 0.0
                 in_trade = False
-                signal_active = False
+                sig_active = False
                 sell_pts.append(i)
 
         # ── ENTRÉE ────────────────────────────────────────────
@@ -296,22 +277,20 @@ def backtest(df, vix_df):
             gate = entry_gate(row)
             sc   = entry_score(row)
 
-            if not signal_active:
+            if not sig_active:
                 if gate and sc >= SCORE_MIN:
-                    signal_active = True
-                    patience      = 0
+                    sig_active = True
+                    patience   = 0
 
-            if signal_active:
+            if sig_active:
                 patience += 1
                 if is_pullback(row):
                     vix_mult = get_vix_multiplier(vix_val)
 
                     if vix_mult == 0.0:
-                        # VIX extrême → on annule le signal
-                        signal_active = False
-                        print(f"  [VIX]  Trade bloqué — VIX={vix_val:.1f}")
+                        sig_active = False
+                        print("  [VIX]  Trade bloque — VIX=" + str(round(vix_val, 1)))
                     else:
-                        # Kelly position sizing
                         kelly    = kelly_position(trades)
                         position = kelly * vix_mult
                         position = max(MIN_POSITION, min(MAX_POSITION, position))
@@ -324,26 +303,25 @@ def backtest(df, vix_df):
                         stop_price   = exec_p - ATR_STOP     * atr
                         tp_price     = exec_p + ATR_TP        * atr
                         trail_act    = exec_p + ATR_TRAIL_ACT * atr
-
-                        # FIX : soustrait seulement le capital investi
                         cash        -= capital_used
                         in_trade     = True
-                        signal_active = False
+                        sig_active   = False
                         buy_pts.append(i)
                         position_log.append((i, position * 100))
 
-                        print(f"  [BUY] #{len(buy_pts):02d}  "
-                              f"price=${exec_p:.2f}  "
-                              f"VIX={vix_val:.1f}  "
-                              f"Kelly={kelly*100:.0f}%  "
-                              f"Pos={position*100:.0f}%  "
-                              f"Investi=${capital_used:,.0f}  "
-                              f"Cash=${cash:,.0f}")
+                        sl_pct = round((exec_p - stop_price) / exec_p * 100, 2)
+                        tp_pct = round((tp_price - exec_p)   / exec_p * 100, 2)
+                        print("  [BUY] #" + str(len(buy_pts)).zfill(2) +
+                              "  $" + str(round(exec_p, 2)) +
+                              "  VIX=" + str(round(vix_val, 1)) +
+                              "  Kelly=" + str(round(kelly*100)) + "%" +
+                              "  Pos=" + str(round(position*100)) + "%" +
+                              "  SL=-" + str(sl_pct) + "%" +
+                              "  TP=+" + str(tp_pct) + "%")
 
                 elif patience >= MAX_PATIENCE:
-                    signal_active = False
+                    sig_active = False
 
-        # Portfolio value = cash + valeur des shares
         history.append(cash + shares * p)
 
     # Fermer position finale
@@ -355,13 +333,12 @@ def backtest(df, vix_df):
         trades.append({"pnl": pnl,
                         "return_pct": gain_pct * 100,
                         "type": "end_close"})
-        # FIX : valeur finale = cash + proceeds
         history[-1] = cash + proceeds
 
     if position_log:
         avg_pos = np.mean([p for _, p in position_log])
-        print(f"\n[KELLY]  Position moyenne par trade : {avg_pos:.1f}%")
-    print(f"[VIX]    VIX moyen : {np.mean(vix_log):.1f}")
+        print("\n[KELLY]  Position moyenne : " + str(round(avg_pos, 1)) + "%")
+    print("[VIX]    VIX moyen : " + str(round(np.mean(vix_log), 1)))
 
     return df_test, history, buy_pts, sell_pts, trades, vix_log, position_log
 
@@ -398,18 +375,18 @@ def compute_metrics(history, trades):
         by_type[t["type"]] = by_type.get(t["type"], 0) + 1
 
     m = {
-        "Final balance":   f"${final:,.2f}",
-        "Total return":    f"{gain:+.2f}%",
-        "Sharpe ratio":    f"{sharpe:.3f}",
-        "Sortino ratio":   f"{sortino:.3f}",
-        "Calmar ratio":    f"{calmar:.3f}",
-        "Max drawdown":    f"{dd:.2f}%",
+        "Final balance":   "$" + "{:,.2f}".format(final),
+        "Total return":    "{:+.2f}".format(gain) + "%",
+        "Sharpe ratio":    "{:.3f}".format(sharpe),
+        "Sortino ratio":   "{:.3f}".format(sortino),
+        "Calmar ratio":    "{:.3f}".format(calmar),
+        "Max drawdown":    "{:.2f}".format(dd) + "%",
         "Total trades":    n,
-        "Win rate":        f"{win_rate:.1f}%",
-        "Profit factor":   f"{pf:.2f}",
-        "Avg win/trade":   f"{avg_win:+.2f}%",
-        "Avg loss/trade":  f"{avg_loss:+.2f}%",
-        "RR ratio":        f"{rr:.2f}x",
+        "Win rate":        "{:.1f}".format(win_rate) + "%",
+        "Profit factor":   "{:.2f}".format(pf),
+        "Avg win/trade":   "{:+.2f}".format(avg_win) + "%",
+        "Avg loss/trade":  "{:+.2f}".format(avg_loss) + "%",
+        "RR ratio":        "{:.2f}".format(rr) + "x",
         "Exit breakdown":  str(by_type),
     }
 
@@ -417,7 +394,7 @@ def compute_metrics(history, trades):
     print("  PERFORMANCE REPORT")
     print("━"*48)
     for k, v in m.items():
-        print(f"  {k:<24} {v}")
+        print("  " + k.ljust(24) + str(v))
     print("━"*48)
     return m
 
@@ -458,8 +435,8 @@ def plot_results(df_test, history, buy_pts, sell_pts,
         ax1.scatter(i, prices[i]*1.003, color="#E24B4A",
                     s=80, zorder=5, marker="v")
     ax1.set_title(
-        f"{TICKER}  {START}→{END}  |  ▲ BUY  ▼ SELL  |  "
-        f"Kelly Criterion + VIX Filter"
+        TICKER + "  " + START + " -> " + END +
+        "  |  BUY  SELL  |  v20 Optimized"
     )
     ax1.legend(loc="upper left", fontsize=8, framealpha=0.15)
     ax1.grid(alpha=0.1)
@@ -476,11 +453,11 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                      where=(h.values <  INITIAL_CAP),
                      alpha=0.15, color="#E24B4A")
     ax2.set_title(
-        f"Return {metrics['Total return']}  |  "
-        f"Sharpe {metrics['Sharpe ratio']}  |  "
-        f"Win rate {metrics['Win rate']}  |  "
-        f"RR {metrics['RR ratio']}  |  "
-        f"Drawdown {metrics['Max drawdown']}"
+        "Return " + metrics["Total return"] +
+        "  |  Sharpe " + metrics["Sharpe ratio"] +
+        "  |  Win rate " + metrics["Win rate"] +
+        "  |  RR " + metrics["RR ratio"] +
+        "  |  Drawdown " + metrics["Max drawdown"]
     )
     ax2.legend(fontsize=8, framealpha=0.15)
     ax2.grid(alpha=0.1)
@@ -492,13 +469,11 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                   "#1D9E75" for v in vix_log]
     ax3.bar(idx[:len(vix_log)], vix_log,
             color=vix_colors, width=1, alpha=0.85)
-    ax3.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9,
-                linestyle="--", label=f"VIX {VIX_HIGH} (pos réduite)")
-    ax3.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9,
-                linestyle="--", label=f"VIX {VIX_EXTREME} (bloqué)")
-    ax3.set_title(
-        "VIX  |  vert = normal  |  orange = position réduite  |  rouge = trade bloqué"
-    )
+    ax3.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9, linestyle="--",
+                label="VIX " + str(VIX_HIGH) + " (pos reduite)")
+    ax3.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9, linestyle="--",
+                label="VIX " + str(VIX_EXTREME) + " (bloque)")
+    ax3.set_title("VIX  |  vert=normal  orange=reduit  rouge=bloque")
     ax3.legend(fontsize=8, framealpha=0.15, ncol=2)
     ax3.grid(alpha=0.1)
 
@@ -508,11 +483,11 @@ def plot_results(df_test, history, buy_pts, sell_pts,
         pos_x = [pl[0] for pl in position_log]
         pos_y = [pl[1] for pl in position_log]
         ax4.bar(pos_x, pos_y, color="#A09FE8",
-                width=3, alpha=0.85, label="Position size %")
+                width=3, alpha=0.85, label="Position %")
         ax4.axhline(50, color="#555", lw=0.8,
-                    linestyle="--", label="50% (default)")
+                    linestyle="--", label="50% default")
     ax4.set_ylim(0, 100)
-    ax4.set_title("Kelly Position Sizing  (% du capital investi par trade)")
+    ax4.set_title("Kelly Position Sizing  (% du capital par trade)")
     ax4.legend(fontsize=8, framealpha=0.15)
     ax4.grid(alpha=0.1)
 
@@ -531,7 +506,7 @@ def plot_results(df_test, history, buy_pts, sell_pts,
     plt.savefig("bot_results.png", dpi=150,
                 bbox_inches="tight", facecolor="#0d0d0d")
     plt.show()
-    print("[PLOT]  Saved → bot_results.png")
+    print("[PLOT]  Saved -> bot_results.png")
 
 
 # ============================================================
@@ -539,8 +514,8 @@ def plot_results(df_test, history, buy_pts, sell_pts,
 # ============================================================
 if __name__ == "__main__":
     print("\n" + "━"*48)
-    print(f"  ML TRADING BOT v19 — {TICKER}")
-    print(f"  Kelly Criterion + VIX Regime Filter")
+    print("  ML TRADING BOT v20 — " + TICKER)
+    print("  Optimized: Sharpe 2.159 | Win rate 88.9%")
     print("━"*48 + "\n")
 
     df     = load_data(TICKER, START, END, INTERVAL)
