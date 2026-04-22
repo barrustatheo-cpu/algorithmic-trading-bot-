@@ -1,11 +1,9 @@
 """
-Algorithmic Trading Bot v20 - Optimized Parameters
+Algorithmic Trading Bot v21 - Legendary Investors Strategies
 Author: Theo
 
-Optimized config found by optimize.py:
-  ATR_STOP=1.5, ATR_TP=3.0, ATR_TRAIL=1.2, ATR_TRAIL_ACT=0.5
-  SCORE_MIN=4, PULLBACK_MAX=0.01
-  Result: +30.14% | Sharpe 2.159 | Win rate 88.9% | Drawdown -5.06%
+Integre les techniques de 7 legendes de la finance :
+Buffett + O'Neil + Tudor Jones + Soros + Livermore + Dalio + Druckenmiller
 """
 
 import yfinance as yf
@@ -15,6 +13,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import warnings
 warnings.filterwarnings("ignore")
+
+from strategies import composite_score, print_composite
 
 plt.style.use("dark_background")
 plt.rcParams.update({
@@ -28,7 +28,7 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# CONFIGURATION — paramètres optimisés par optimize.py
+# CONFIGURATION
 # ============================================================
 TICKER        = "QQQ"
 START         = "2022-01-01"
@@ -40,15 +40,15 @@ SLIPPAGE      = 0.0005
 TRAIN_RATIO   = 0.33
 SLOPE_WIN     = 3
 
-# Paramètres optimisés ✓
+# Parametres optimises v20
 SCORE_MIN     = 4
-PULLBACK_MAX  = 0.01    # 1.0% (plus strict que v19)
-ATR_STOP      = 1.5     # stop loss
-ATR_TP        = 3.0     # take profit
-ATR_TRAIL     = 1.2     # trailing step
-ATR_TRAIL_ACT = 0.5     # trailing actif après +0.5 ATR
+PULLBACK_MAX  = 0.01
+ATR_STOP      = 1.5
+ATR_TP        = 3.0
+ATR_TRAIL     = 1.2
+ATR_TRAIL_ACT = 0.5
 
-# Kelly Criterion
+# Kelly
 KELLY_FRACTION = 0.5
 MAX_POSITION   = 0.95
 MIN_POSITION   = 0.10
@@ -56,6 +56,10 @@ MIN_POSITION   = 0.10
 # VIX
 VIX_HIGH    = 25
 VIX_EXTREME = 35
+
+# Seuil composite legendes (0-100)
+# Le bot entre seulement si le score composite >= ce seuil
+COMPOSITE_MIN = 45
 
 
 # ============================================================
@@ -122,7 +126,7 @@ def build_indicators(df):
 
 
 # ============================================================
-# 3. GATE
+# 3. GATE v20 (inchange)
 # ============================================================
 def entry_gate(row):
     return (float(row["Close"])      > float(row["MA200"]) and
@@ -133,7 +137,7 @@ def entry_gate(row):
 
 
 # ============================================================
-# 4. SCORE
+# 4. SCORE v20 (inchange)
 # ============================================================
 def entry_score(row):
     score = 0
@@ -160,23 +164,18 @@ def is_pullback(row):
 def kelly_position(trades_history):
     if len(trades_history) < 5:
         return 0.50
-
     recent   = trades_history[-20:]
     wins     = [t for t in recent if t["pnl"] > 0]
     losses   = [t for t in recent if t["pnl"] < 0]
-
     if not wins or not losses:
         return 0.50
-
     W        = len(wins) / len(recent)
     avg_win  = np.mean([t["pnl"] for t in wins])
     avg_loss = abs(np.mean([t["pnl"] for t in losses]))
     R        = avg_win / avg_loss if avg_loss > 0 else 1.0
-
-    kelly = W - (1 - W) / R
-    kelly = kelly * KELLY_FRACTION
-    kelly = max(MIN_POSITION, min(MAX_POSITION, kelly))
-    return kelly
+    kelly    = W - (1 - W) / R
+    kelly    = kelly * KELLY_FRACTION
+    return max(MIN_POSITION, min(MAX_POSITION, kelly))
 
 
 # ============================================================
@@ -202,7 +201,7 @@ def get_vix_multiplier(vix_value):
 
 
 # ============================================================
-# 8. BACKTEST
+# 8. BACKTEST v21 — avec score composite legendes
 # ============================================================
 def backtest(df, vix_df):
     split   = int(len(df) * TRAIN_RATIO)
@@ -220,12 +219,13 @@ def backtest(df, vix_df):
     patience    = 0
     MAX_PATIENCE = 5
 
-    history      = []
-    buy_pts      = []
-    sell_pts     = []
-    trades       = []
-    vix_log      = []
-    position_log = []
+    history       = []
+    buy_pts       = []
+    sell_pts      = []
+    trades        = []
+    vix_log       = []
+    position_log  = []
+    composite_log = []  # score composite a chaque entree
 
     for i in range(len(df_test)):
         row      = df_test.iloc[i]
@@ -272,7 +272,7 @@ def backtest(df, vix_df):
                 sig_active = False
                 sell_pts.append(i)
 
-        # ── ENTRÉE ────────────────────────────────────────────
+        # ── ENTREE v21 — Gate + Score + Composite Legendes ────
         if not in_trade and cash > 100:
             gate = entry_gate(row)
             sc   = entry_score(row)
@@ -289,35 +289,51 @@ def backtest(df, vix_df):
 
                     if vix_mult == 0.0:
                         sig_active = False
-                        print("  [VIX]  Trade bloque — VIX=" + str(round(vix_val, 1)))
+
                     else:
-                        kelly    = kelly_position(trades)
-                        position = kelly * vix_mult
-                        position = max(MIN_POSITION, min(MAX_POSITION, position))
+                        # NOUVEAU v21 : calcul du score composite legendes
+                        # On utilise les 200 dernieres lignes pour le contexte
+                        start_idx = max(0, i - 200)
+                        df_window = df_test.iloc[start_idx:i+1].copy()
 
-                        exec_p       = p * (1 + SLIPPAGE)
-                        capital_used = cash * position
-                        shares       = (capital_used * (1 - FEES)) / exec_p
-                        entry_price  = exec_p
-                        peak_price   = exec_p
-                        stop_price   = exec_p - ATR_STOP     * atr
-                        tp_price     = exec_p + ATR_TP        * atr
-                        trail_act    = exec_p + ATR_TRAIL_ACT * atr
-                        cash        -= capital_used
-                        in_trade     = True
-                        sig_active   = False
-                        buy_pts.append(i)
-                        position_log.append((i, position * 100))
+                        try:
+                            comp, _, _, _ = composite_score(
+                                df_window, ATR_STOP, ATR_TP
+                            )
+                        except Exception:
+                            comp = 50  # valeur neutre si erreur
 
-                        sl_pct = round((exec_p - stop_price) / exec_p * 100, 2)
-                        tp_pct = round((tp_price - exec_p)   / exec_p * 100, 2)
-                        print("  [BUY] #" + str(len(buy_pts)).zfill(2) +
-                              "  $" + str(round(exec_p, 2)) +
-                              "  VIX=" + str(round(vix_val, 1)) +
-                              "  Kelly=" + str(round(kelly*100)) + "%" +
-                              "  Pos=" + str(round(position*100)) + "%" +
-                              "  SL=-" + str(sl_pct) + "%" +
-                              "  TP=+" + str(tp_pct) + "%")
+                        # On entre seulement si les legendes sont d'accord
+                        if comp >= COMPOSITE_MIN:
+                            kelly    = kelly_position(trades)
+                            position = kelly * vix_mult
+                            position = max(MIN_POSITION, min(MAX_POSITION, position))
+
+                            exec_p       = p * (1 + SLIPPAGE)
+                            capital_used = cash * position
+                            shares       = (capital_used * (1 - FEES)) / exec_p
+                            entry_price  = exec_p
+                            peak_price   = exec_p
+                            stop_price   = exec_p - ATR_STOP     * atr
+                            tp_price     = exec_p + ATR_TP        * atr
+                            trail_act    = exec_p + ATR_TRAIL_ACT * atr
+                            cash        -= capital_used
+                            in_trade     = True
+                            sig_active   = False
+                            buy_pts.append(i)
+                            position_log.append((i, position * 100))
+                            composite_log.append(comp)
+
+                            print("  [BUY] #" + str(len(buy_pts)).zfill(2) +
+                                  "  $" + str(round(exec_p, 2)) +
+                                  "  Composite=" + str(comp) + "/100" +
+                                  "  VIX=" + str(round(vix_val, 1)) +
+                                  "  Kelly=" + str(round(kelly*100)) + "%" +
+                                  "  Pos=" + str(round(position*100)) + "%")
+                        else:
+                            print("  [SKIP] Composite trop bas : " +
+                                  str(comp) + "/100 < " + str(COMPOSITE_MIN))
+                            sig_active = False
 
                 elif patience >= MAX_PATIENCE:
                     sig_active = False
@@ -335,12 +351,14 @@ def backtest(df, vix_df):
                         "type": "end_close"})
         history[-1] = cash + proceeds
 
+    avg_comp = round(np.mean(composite_log), 1) if composite_log else 0
+    print("\n[COMPOSITE]  Score moyen sur les trades : " + str(avg_comp) + "/100")
     if position_log:
         avg_pos = np.mean([p for _, p in position_log])
-        print("\n[KELLY]  Position moyenne : " + str(round(avg_pos, 1)) + "%")
-    print("[VIX]    VIX moyen : " + str(round(np.mean(vix_log), 1)))
+        print("[KELLY]      Position moyenne : " + str(round(avg_pos, 1)) + "%")
+    print("[VIX]        VIX moyen : " + str(round(np.mean(vix_log), 1)))
 
-    return df_test, history, buy_pts, sell_pts, trades, vix_log, position_log
+    return df_test, history, buy_pts, sell_pts, trades, vix_log, position_log, composite_log
 
 
 # ============================================================
@@ -403,15 +421,14 @@ def compute_metrics(history, trades):
 # 10. VISUALISATION
 # ============================================================
 def plot_results(df_test, history, buy_pts, sell_pts,
-                 metrics, trades, vix_log, position_log):
+                 metrics, trades, vix_log, position_log, composite_log):
 
-    fig = plt.figure(figsize=(16, 15), facecolor="#0d0d0d")
+    fig = plt.figure(figsize=(16, 16), facecolor="#0d0d0d")
     gs  = gridspec.GridSpec(5, 1, hspace=0.5,
                             height_ratios=[3, 2, 1.2, 1.2, 1.2])
 
     prices = df_test["Close"].values
     ma200  = df_test["MA200"].values
-    ma20   = df_test["MA20"].values
     h      = pd.Series(history, dtype=float)
     idx    = list(range(len(df_test)))
 
@@ -424,7 +441,7 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                      where=~bull, alpha=0.06, color="#E24B4A")
     ax1.plot(prices,                  color="#e0e0e0", lw=1,   label="Price")
     ax1.plot(df_test["MA10"].values,  color="#3B8BD4", lw=0.9, label="MA10")
-    ax1.plot(ma20,                    color="#A09FE8", lw=0.9, label="MA20")
+    ax1.plot(df_test["MA20"].values,  color="#A09FE8", lw=0.9, label="MA20")
     ax1.plot(df_test["MA50"].values,  color="#EF9F27", lw=0.9, label="MA50")
     ax1.plot(ma200,                   color="#E24B4A", lw=0.8,
              linestyle="--",          label="MA200")
@@ -436,7 +453,7 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                     s=80, zorder=5, marker="v")
     ax1.set_title(
         TICKER + "  " + START + " -> " + END +
-        "  |  BUY  SELL  |  v20 Optimized"
+        "  |  v21 Legendary Strategies"
     )
     ax1.legend(loc="upper left", fontsize=8, framealpha=0.15)
     ax1.grid(alpha=0.1)
@@ -462,40 +479,47 @@ def plot_results(df_test, history, buy_pts, sell_pts,
     ax2.legend(fontsize=8, framealpha=0.15)
     ax2.grid(alpha=0.1)
 
-    # ── VIX ───────────────────────────────────────────────────
+    # ── Score composite legendes ──────────────────────────────
     ax3 = fig.add_subplot(gs[2])
+    if composite_log and buy_pts:
+        bar_colors = ["#1D9E75" if s >= 60 else
+                      "#EF9F27" if s >= 45 else
+                      "#E24B4A" for s in composite_log]
+        ax3.bar([buy_pts[i] for i in range(len(composite_log))],
+                composite_log, color=bar_colors, width=4, alpha=0.9,
+                label="Score composite")
+        ax3.axhline(COMPOSITE_MIN, color="#EF9F27", lw=0.9,
+                    linestyle="--", label="Seuil " + str(COMPOSITE_MIN))
+        ax3.axhline(60, color="#1D9E75", lw=0.9,
+                    linestyle="--", label="Bon signal 60")
+    ax3.set_ylim(0, 100)
+    ax3.set_title(
+        "Score composite legendes  |  "
+        "vert >= 60  orange >= 45  rouge < 45"
+    )
+    ax3.legend(fontsize=8, framealpha=0.15)
+    ax3.grid(alpha=0.1)
+
+    # ── VIX ───────────────────────────────────────────────────
+    ax4 = fig.add_subplot(gs[3])
     vix_colors = ["#E24B4A" if v > VIX_EXTREME else
                   "#EF9F27" if v > VIX_HIGH    else
                   "#1D9E75" for v in vix_log]
-    ax3.bar(idx[:len(vix_log)], vix_log,
+    ax4.bar(idx[:len(vix_log)], vix_log,
             color=vix_colors, width=1, alpha=0.85)
-    ax3.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9, linestyle="--",
-                label="VIX " + str(VIX_HIGH) + " (pos reduite)")
-    ax3.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9, linestyle="--",
-                label="VIX " + str(VIX_EXTREME) + " (bloque)")
-    ax3.set_title("VIX  |  vert=normal  orange=reduit  rouge=bloque")
-    ax3.legend(fontsize=8, framealpha=0.15, ncol=2)
-    ax3.grid(alpha=0.1)
-
-    # ── Kelly Position Size ───────────────────────────────────
-    ax4 = fig.add_subplot(gs[3])
-    if position_log:
-        pos_x = [pl[0] for pl in position_log]
-        pos_y = [pl[1] for pl in position_log]
-        ax4.bar(pos_x, pos_y, color="#A09FE8",
-                width=3, alpha=0.85, label="Position %")
-        ax4.axhline(50, color="#555", lw=0.8,
-                    linestyle="--", label="50% default")
-    ax4.set_ylim(0, 100)
-    ax4.set_title("Kelly Position Sizing  (% du capital par trade)")
-    ax4.legend(fontsize=8, framealpha=0.15)
+    ax4.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9, linestyle="--",
+                label="VIX " + str(VIX_HIGH))
+    ax4.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9, linestyle="--",
+                label="VIX " + str(VIX_EXTREME))
+    ax4.set_title("VIX  |  vert=normal  orange=reduit  rouge=bloque")
+    ax4.legend(fontsize=8, framealpha=0.15, ncol=2)
     ax4.grid(alpha=0.1)
 
     # ── RSI ───────────────────────────────────────────────────
     ax5 = fig.add_subplot(gs[4])
     ax5.plot(df_test["RSI"].values, color="#A09FE8", lw=0.9, label="RSI (14)")
     ax5.axhline(70, color="#E24B4A", lw=0.7, linestyle="--", label="70")
-    ax5.axhline(48, color="#1D9E75", lw=0.7, linestyle="--", label="48 (gate)")
+    ax5.axhline(48, color="#1D9E75", lw=0.7, linestyle="--", label="48")
     ax5.fill_between(idx, 70, 100, alpha=0.07, color="#E24B4A")
     ax5.fill_between(idx, 0,  48,  alpha=0.07, color="#E24B4A")
     ax5.set_ylim(0, 100)
@@ -513,16 +537,22 @@ def plot_results(df_test, history, buy_pts, sell_pts,
 # MAIN
 # ============================================================
 if __name__ == "__main__":
-    print("\n" + "━"*48)
-    print("  ML TRADING BOT v20 — " + TICKER)
-    print("  Optimized: Sharpe 2.159 | Win rate 88.9%")
-    print("━"*48 + "\n")
+    print("\n" + "━"*52)
+    print("  ML TRADING BOT v21 — " + TICKER)
+    print("  Legendary Investors Composite Strategy")
+    print("  Buffett + O'Neil + Tudor + Soros + Livermore + Dalio + Druckenmiller")
+    print("━"*52 + "\n")
 
     df     = load_data(TICKER, START, END, INTERVAL)
     vix_df = load_vix(START, END)
     df     = build_indicators(df)
 
-    df_test, history, buys, sells, trades, vix_log, pos_log = backtest(df, vix_df)
+    # Analyse composite sur les donnees recentes (pour info)
+    print("[COMPOSITE] Analyse des legendes sur donnees recentes...")
+    norm, total, maxi, details = composite_score(df, ATR_STOP, ATR_TP)
+    print_composite(norm, total, maxi, details)
+
+    df_test, history, buys, sells, trades, vix_log, pos_log, comp_log = backtest(df, vix_df)
     metrics = compute_metrics(history, trades)
     plot_results(df_test, history, buys, sells,
-                 metrics, trades, vix_log, pos_log)
+                 metrics, trades, vix_log, pos_log, comp_log)
