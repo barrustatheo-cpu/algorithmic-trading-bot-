@@ -1,9 +1,10 @@
 """
-Algorithmic Trading Bot v21 - Legendary Investors Strategies
+Algorithmic Trading Bot v21 - Legendary Investors + Human Language
 Author: Theo
 
 Integre les techniques de 7 legendes de la finance :
 Buffett + O'Neil + Tudor Jones + Soros + Livermore + Dalio + Druckenmiller
+Avec donnees fondamentales reelles et rapports en langage naturel.
 """
 
 import yfinance as yf
@@ -57,8 +58,7 @@ MIN_POSITION   = 0.10
 VIX_HIGH    = 25
 VIX_EXTREME = 35
 
-# Seuil composite legendes (0-100)
-# Le bot entre seulement si le score composite >= ce seuil
+# Seuil composite legendes
 COMPOSITE_MIN = 45
 
 
@@ -126,7 +126,7 @@ def build_indicators(df):
 
 
 # ============================================================
-# 3. GATE v20 (inchange)
+# 3. GATE
 # ============================================================
 def entry_gate(row):
     return (float(row["Close"])      > float(row["MA200"]) and
@@ -137,7 +137,7 @@ def entry_gate(row):
 
 
 # ============================================================
-# 4. SCORE v20 (inchange)
+# 4. SCORE
 # ============================================================
 def entry_score(row):
     score = 0
@@ -201,7 +201,7 @@ def get_vix_multiplier(vix_value):
 
 
 # ============================================================
-# 8. BACKTEST v21 — avec score composite legendes
+# 8. BACKTEST
 # ============================================================
 def backtest(df, vix_df):
     split   = int(len(df) * TRAIN_RATIO)
@@ -225,7 +225,7 @@ def backtest(df, vix_df):
     trades        = []
     vix_log       = []
     position_log  = []
-    composite_log = []  # score composite a chaque entree
+    composite_log = []
 
     for i in range(len(df_test)):
         row      = df_test.iloc[i]
@@ -272,7 +272,7 @@ def backtest(df, vix_df):
                 sig_active = False
                 sell_pts.append(i)
 
-        # ── ENTREE v21 — Gate + Score + Composite Legendes ────
+        # ── ENTREE ────────────────────────────────────────────
         if not in_trade and cash > 100:
             gate = entry_gate(row)
             sc   = entry_score(row)
@@ -291,23 +291,21 @@ def backtest(df, vix_df):
                         sig_active = False
 
                     else:
-                        # NOUVEAU v21 : calcul du score composite legendes
-                        # On utilise les 200 dernieres lignes pour le contexte
-                        start_idx = max(0, i - 200)
-                        df_window = df_test.iloc[start_idx:i+1].copy()
+                        start_idx  = max(0, i - 200)
+                        df_window  = df_test.iloc[start_idx:i+1].copy()
 
                         try:
                             comp, _, _, _ = composite_score(
-                                df_window, ATR_STOP, ATR_TP
+                                df_window, ATR_STOP, ATR_TP, TICKER
                             )
                         except Exception:
-                            comp = 50  # valeur neutre si erreur
+                            comp = 50
 
-                        # On entre seulement si les legendes sont d'accord
                         if comp >= COMPOSITE_MIN:
-                            kelly    = kelly_position(trades)
-                            position = kelly * vix_mult
-                            position = max(MIN_POSITION, min(MAX_POSITION, position))
+                            kelly        = kelly_position(trades)
+                            position     = kelly * vix_mult
+                            position     = max(MIN_POSITION,
+                                               min(MAX_POSITION, position))
 
                             exec_p       = p * (1 + SLIPPAGE)
                             capital_used = cash * position
@@ -331,8 +329,8 @@ def backtest(df, vix_df):
                                   "  Kelly=" + str(round(kelly*100)) + "%" +
                                   "  Pos=" + str(round(position*100)) + "%")
                         else:
-                            print("  [SKIP] Composite trop bas : " +
-                                  str(comp) + "/100 < " + str(COMPOSITE_MIN))
+                            print("  [SKIP] Composite=" + str(comp) +
+                                  "/100 < " + str(COMPOSITE_MIN))
                             sig_active = False
 
                 elif patience >= MAX_PATIENCE:
@@ -352,13 +350,14 @@ def backtest(df, vix_df):
         history[-1] = cash + proceeds
 
     avg_comp = round(np.mean(composite_log), 1) if composite_log else 0
-    print("\n[COMPOSITE]  Score moyen sur les trades : " + str(avg_comp) + "/100")
+    print("\n[COMPOSITE]  Score moyen : " + str(avg_comp) + "/100")
     if position_log:
-        avg_pos = np.mean([p for _, p in position_log])
-        print("[KELLY]      Position moyenne : " + str(round(avg_pos, 1)) + "%")
-    print("[VIX]        VIX moyen : " + str(round(np.mean(vix_log), 1)))
+        print("[KELLY]      Position moy : " +
+              str(round(np.mean([p for _, p in position_log]), 1)) + "%")
+    print("[VIX]        VIX moyen   : " + str(round(np.mean(vix_log), 1)))
 
-    return df_test, history, buy_pts, sell_pts, trades, vix_log, position_log, composite_log
+    return (df_test, history, buy_pts, sell_pts,
+            trades, vix_log, position_log, composite_log)
 
 
 # ============================================================
@@ -421,7 +420,8 @@ def compute_metrics(history, trades):
 # 10. VISUALISATION
 # ============================================================
 def plot_results(df_test, history, buy_pts, sell_pts,
-                 metrics, trades, vix_log, position_log, composite_log):
+                 metrics, trades, vix_log, position_log,
+                 composite_log):
 
     fig = plt.figure(figsize=(16, 16), facecolor="#0d0d0d")
     gs  = gridspec.GridSpec(5, 1, hspace=0.5,
@@ -453,7 +453,7 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                     s=80, zorder=5, marker="v")
     ax1.set_title(
         TICKER + "  " + START + " -> " + END +
-        "  |  v21 Legendary Strategies"
+        "  |  v21 — Buffett+O'Neil+Tudor+Soros+Livermore+Dalio+Druckenmiller"
     )
     ax1.legend(loc="upper left", fontsize=8, framealpha=0.15)
     ax1.grid(alpha=0.1)
@@ -479,23 +479,25 @@ def plot_results(df_test, history, buy_pts, sell_pts,
     ax2.legend(fontsize=8, framealpha=0.15)
     ax2.grid(alpha=0.1)
 
-    # ── Score composite legendes ──────────────────────────────
+    # ── Score composite ───────────────────────────────────────
     ax3 = fig.add_subplot(gs[2])
     if composite_log and buy_pts:
-        bar_colors = ["#1D9E75" if s >= 60 else
+        n = min(len(composite_log), len(buy_pts))
+        bar_colors = ["#1D9E75" if s >= 65 else
                       "#EF9F27" if s >= 45 else
-                      "#E24B4A" for s in composite_log]
-        ax3.bar([buy_pts[i] for i in range(len(composite_log))],
-                composite_log, color=bar_colors, width=4, alpha=0.9,
-                label="Score composite")
+                      "#E24B4A" for s in composite_log[:n]]
+        ax3.bar([buy_pts[i] for i in range(n)],
+                composite_log[:n],
+                color=bar_colors, width=4, alpha=0.9)
         ax3.axhline(COMPOSITE_MIN, color="#EF9F27", lw=0.9,
-                    linestyle="--", label="Seuil " + str(COMPOSITE_MIN))
-        ax3.axhline(60, color="#1D9E75", lw=0.9,
-                    linestyle="--", label="Bon signal 60")
+                    linestyle="--",
+                    label="Seuil min " + str(COMPOSITE_MIN))
+        ax3.axhline(65, color="#1D9E75", lw=0.9,
+                    linestyle="--", label="Bon signal 65")
     ax3.set_ylim(0, 100)
     ax3.set_title(
         "Score composite legendes  |  "
-        "vert >= 60  orange >= 45  rouge < 45"
+        "vert >= 65  orange >= 45  rouge < 45"
     )
     ax3.legend(fontsize=8, framealpha=0.15)
     ax3.grid(alpha=0.1)
@@ -507,17 +509,18 @@ def plot_results(df_test, history, buy_pts, sell_pts,
                   "#1D9E75" for v in vix_log]
     ax4.bar(idx[:len(vix_log)], vix_log,
             color=vix_colors, width=1, alpha=0.85)
-    ax4.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9, linestyle="--",
-                label="VIX " + str(VIX_HIGH))
-    ax4.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9, linestyle="--",
-                label="VIX " + str(VIX_EXTREME))
+    ax4.axhline(VIX_HIGH,    color="#EF9F27", lw=0.9,
+                linestyle="--", label="VIX " + str(VIX_HIGH))
+    ax4.axhline(VIX_EXTREME, color="#E24B4A", lw=0.9,
+                linestyle="--", label="VIX " + str(VIX_EXTREME))
     ax4.set_title("VIX  |  vert=normal  orange=reduit  rouge=bloque")
     ax4.legend(fontsize=8, framealpha=0.15, ncol=2)
     ax4.grid(alpha=0.1)
 
     # ── RSI ───────────────────────────────────────────────────
     ax5 = fig.add_subplot(gs[4])
-    ax5.plot(df_test["RSI"].values, color="#A09FE8", lw=0.9, label="RSI (14)")
+    ax5.plot(df_test["RSI"].values, color="#A09FE8",
+             lw=0.9, label="RSI (14)")
     ax5.axhline(70, color="#E24B4A", lw=0.7, linestyle="--", label="70")
     ax5.axhline(48, color="#1D9E75", lw=0.7, linestyle="--", label="48")
     ax5.fill_between(idx, 70, 100, alpha=0.07, color="#E24B4A")
@@ -538,21 +541,28 @@ def plot_results(df_test, history, buy_pts, sell_pts,
 # ============================================================
 if __name__ == "__main__":
     print("\n" + "━"*52)
-    print("  ML TRADING BOT v21 — " + TICKER)
-    print("  Legendary Investors Composite Strategy")
-    print("  Buffett + O'Neil + Tudor + Soros + Livermore + Dalio + Druckenmiller")
+    print("  TRADING BOT v21 — " + TICKER)
+    print("  Legendary Investors + Human Language Report")
     print("━"*52 + "\n")
 
     df     = load_data(TICKER, START, END, INTERVAL)
     vix_df = load_vix(START, END)
     df     = build_indicators(df)
 
-    # Analyse composite sur les donnees recentes (pour info)
-    print("[COMPOSITE] Analyse des legendes sur donnees recentes...")
-    norm, total, maxi, details = composite_score(df, ATR_STOP, ATR_TP)
-    print_composite(norm, total, maxi, details)
+    # Rapport humain sur les donnees actuelles
+    print("[COMPOSITE] Analyse des legendes en cours...\n")
+    norm, total, maxi, details = composite_score(
+        df, ATR_STOP, ATR_TP, TICKER
+    )
+    print_composite(norm, total, maxi, details, TICKER)
 
-    df_test, history, buys, sells, trades, vix_log, pos_log, comp_log = backtest(df, vix_df)
+    # Backtest
+    (df_test, history, buys, sells,
+     trades, vix_log, pos_log,
+     comp_log) = backtest(df, vix_df)
+
     metrics = compute_metrics(history, trades)
+
     plot_results(df_test, history, buys, sells,
-                 metrics, trades, vix_log, pos_log, comp_log)
+                 metrics, trades, vix_log,
+                 pos_log, comp_log)
